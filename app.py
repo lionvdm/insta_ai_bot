@@ -7,7 +7,6 @@ from upstash_redis import Redis
 
 # Создаем приложение
 app = Flask(__name__)
-# Страховка для Vercel
 application = app
 
 # Настройки из переменных окружения
@@ -67,10 +66,10 @@ def ask_gpt(user_id, user_message):
         else:
             history = []
 
-        # ОЧИСТКА: Убираем старые системные инструкции, если они там были
+        # ОЧИСТКА: Убираем старые системные инструкции
         history = [msg for msg in history if msg.get("role") != "system"]
         
-        # ВСЕГДА вставляем актуальный промпт из кода на первое место
+        # Вставляем актуальный промпт
         history.insert(0, {"role": "system", "content": SYSTEM_PROMPT})
 
         history.append({"role": "user", "content": user_message})
@@ -88,12 +87,12 @@ def ask_gpt(user_id, user_message):
 
         response = openai.ChatCompletion.create(
             model="gpt-4o-mini",
-            messages=messages_to_send, # Отправляем с "шепотом"
+            messages=messages_to_send,
             temperature=0.7
-        )
         )
         ai_answer = response.choices[0].message.content
 
+        # Сохраняем в базу ТОЛЬКО нормальную историю, без "шепота"
         history.append({"role": "assistant", "content": ai_answer})
         redis.set(history_key, json.dumps(history))
         return ai_answer
