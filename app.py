@@ -52,18 +52,26 @@ def ask_gpt(user_id, user_message):
         history_key = f"chat:{user_id}"
         raw_history = redis.get(history_key)
         
+        # Загружаем историю
         if raw_history:
             history = json.loads(raw_history) if isinstance(raw_history, str) else raw_history
         else:
-            history = [{"role": "system", "content": SYSTEM_PROMPT}]
+            history = []
+
+        # ОЧИСТКА: Убираем старые системные инструкции, если они там были
+        history = [msg for msg in history if msg.get("role") != "system"]
+        
+        # ВСЕГДА вставляем актуальный промпт из кода на первое место
+        history.insert(0, {"role": "system", "content": SYSTEM_PROMPT})
 
         history.append({"role": "user", "content": user_message})
 
+        # Лимит сообщений
         if len(history) > 31:
             history = [history[0]] + history[-30:]
 
         response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
+            model="gpt-3.5-turbo", # Если есть возможность, попробуй поменять на "gpt-4o-mini" — он умнее и дешевле
             messages=history,
             temperature=0.7
         )
