@@ -71,7 +71,7 @@ def ask_gpt(user_id, user_message):
             history = [history[0]] + history[-30:]
 
         response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo", # Если есть возможность, попробуй поменять на "gpt-4o-mini" — он умнее и дешевле
+            model="gpt-4o-mini", # Если есть возможность, попробуй поменять на "gpt-4o-mini" — он умнее и дешевле
             messages=history,
             temperature=0.7
         )
