@@ -79,10 +79,18 @@ def ask_gpt(user_id, user_message):
         if len(history) > 31:
             history = [history[0]] + history[-30:]
 
+        # === ЯДЕРНЫЙ ВАРИАНТ: ШЕПОТ НА УХО ПЕРЕД ОТВЕТОМ ===
+        messages_to_send = history.copy()
+        messages_to_send.append({
+            "role": "system", 
+            "content": "CRITICAL RULE: Respond STRICTLY in the language of the user's VERY LAST message. If the user wrote even one word in English (like 'maybe'), your ENTIRE reply MUST be in English. Если по-русски — отвечай по-русски. Егер қазақша болса — қазақша жауап бер."
+        })
+
         response = openai.ChatCompletion.create(
             model="gpt-4o-mini",
-            messages=history,
+            messages=messages_to_send, # Отправляем с "шепотом"
             temperature=0.7
+        )
         )
         ai_answer = response.choices[0].message.content
 
