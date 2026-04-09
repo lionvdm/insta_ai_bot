@@ -2,6 +2,7 @@ from flask import Flask, request, jsonify
 import openai
 import os
 import requests
+import json  # Добавили для правильной работы с памятью
 from upstash_redis import Redis
 
 app = Flask(__name__)
@@ -70,25 +71,32 @@ SYSTEM_PROMPT = """
 """
 
 def ask_gpt(user_id, user_message):
-    """Связь с OpenAI с использованием памяти из Redis"""
+    """Связь с OpenAI с использованием памяти из Redis и JSON-сериализацией"""
     try:
         history_key = f"chat:{user_id}"
         
-        # Тянем историю из Redis
-        history = redis.get(history_key) or []
+        # 1. Тянем историю из Redis
+        raw_history = redis.get(history_key)
         
-        # Если истории нет, начинаем с системной инструкции
-        if not history:
+        # 2. Превращаем строку из базы обратно в список Python
+        if raw_history:
+            # Проверяем, если данные пришли в виде строки (JSON), декодируем их
+            if isinstance(raw_history, str):
+                history = json.loads(raw_history)
+            else:
+                history = raw_history
+        else:
+            # Если истории нет, создаем новую с системным промтом
             history = [{"role": "system", "content": SYSTEM_PROMPT}]
 
-        # Добавляем сообщение пользователя
+        # 3. Добавляем новое сообщение пользователя
         history.append({"role": "user", "content": user_message})
 
-        # Лимит памяти: 40 последних сообщений (золотая середина по цене и качеству)
-        if len(history) > 41:
-            history = [history[0]] + history[-40:]
+        # 4. Лимит памяти: 30 последних сообщений (чтобы не перегружать контекст)
+        if len(history) > 31:
+            history = [history[0]] + history[-30:]
 
-        # Запрос к нейросети
+        # 5. Запрос к нейросети
         response = openai.ChatCompletion.create(
             model="gpt-3.5-turbo",
             messages=history,
@@ -96,14 +104,16 @@ def ask_gpt(user_id, user_message):
         )
         ai_answer = response.choices[0].message.content
 
-        # Сохраняем ответ бота в историю и записываем в базу
+        # 6. Сохраняем ответ бота в историю
         history.append({"role": "assistant", "content": ai_answer})
-        redis.set(history_key, history)
+        
+        # 7. Превращаем список в JSON-строку и сохраняем в Redis
+        redis.set(history_key, json.dumps(history))
 
         return ai_answer
 
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"Detailed Error: {e}")
         return "Прости, я немного задумалась. Попробуй еще раз!"
 
 # --- СЕКЦИИ WEBHOOK ---
