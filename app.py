@@ -5,14 +5,17 @@ import requests
 
 app = Flask(__name__)
 
-# Считываем настройки из переменных окружения Vercel
+# --- Настройки из переменных окружения Vercel ---
 VERIFY_TOKEN = os.environ.get('VERIFY_TOKEN')
 PAGE_ACCESS_TOKEN = os.environ.get('PAGE_ACCESS_TOKEN')
+TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
 openai.api_key = os.environ.get('OPENAI_API_KEY')
+
+# --- СЕКЦИЯ INSTAGRAM ---
 
 @app.route('/webhook', methods=['GET'])
 def verify():
-    """Проверка связи с Meta (Instagram/Facebook)"""
+    """Проверка связи с Meta"""
     mode = request.args.get("hub.mode")
     token = request.args.get("hub.verify_token")
     challenge = request.args.get("hub.challenge")
@@ -26,29 +29,38 @@ def verify():
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    """Прием и обработка сообщений"""
+    """Прием сообщений из Instagram"""
     data = request.get_json()
-
     if data.get("object") == "instagram":
         for entry in data.get("entry", []):
             for messaging_event in entry.get("messaging", []):
-                # Проверяем, что это именно сообщение
                 if messaging_event.get("message"):
                     sender_id = messaging_event["sender"]["id"]
                     message_text = messaging_event["message"].get("text")
-
                     if message_text:
-                        # 1. Спрашиваем у нейросети
                         ai_answer = ask_gpt(message_text)
-                        # 2. Отправляем ответ пользователю
-                        send_message(sender_id, ai_answer)
-
+                        send_instagram_message(sender_id, ai_answer)
     return "EVENT_RECEIVED", 200
 
+# --- СЕКЦИЯ TELEGRAM ---
+
+@app.route('/telegram', methods=['POST'])
+def telegram_webhook():
+    """Прием сообщений из Telegram"""
+    data = request.get_json()
+    if "message" in data:
+        chat_id = data["message"]["chat"]["id"]
+        text = data["message"].get("text")
+        if text:
+            ai_answer = ask_gpt(text)
+            send_telegram_message(chat_id, ai_answer)
+    return "OK", 200
+
+# --- ОБЩИЙ МОЗГ (OpenAI) ---
+
 def ask_gpt(prompt):
-    """Связь с OpenAI"""
+    """Связь с OpenAI (одна для всех платформ)"""
     try:
-        # Используем старый синтаксис для совместимости с простыми версиями библиотек
         response = openai.ChatCompletion.create(
             model="gpt-3.5-turbo",
             messages=[{"role": "user", "content": prompt}]
@@ -58,17 +70,19 @@ def ask_gpt(prompt):
         print(f"OpenAI Error: {e}")
         return "Прости, я немного задумался. Попробуй еще раз!"
 
-def send_message(recipient_id, text):
-    """Отправка ответа в Instagram через Graph API"""
+# --- ОТПРАВКА СООБЩЕНИЙ ---
+
+def send_instagram_message(recipient_id, text):
+    """Отправка в Instagram"""
     url = f"https://graph.facebook.com/v19.0/me/messages?access_token={PAGE_ACCESS_TOKEN}"
-    payload = {
-        "recipient": {"id": recipient_id},
-        "message": {"text": text}
-    }
-    try:
-        requests.post(url, json=payload)
-    except Exception as e:
-        print(f"Send Message Error: {e}")
+    payload = {"recipient": {"id": recipient_id}, "message": {"text": text}}
+    requests.post(url, json=payload)
+
+def send_telegram_message(chat_id, text):
+    """Отправка в Telegram"""
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {"chat_id": chat_id, "text": text}
+    requests.post(url, json=payload)
 
 if __name__ == '__main__':
     app.run(port=5000)
