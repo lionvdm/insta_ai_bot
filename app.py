@@ -2,6 +2,7 @@ import os
 import json
 import requests
 import openai
+import re # <-- Добавили библиотеку для поиска секретного тега
 from flask import Flask, request
 from upstash_redis import Redis
 
@@ -13,6 +14,7 @@ application = app
 VERIFY_TOKEN = os.environ.get('VERIFY_TOKEN')
 PAGE_ACCESS_TOKEN = os.environ.get('PAGE_ACCESS_TOKEN')
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
+ADMIN_CHAT_ID = os.environ.get('ADMIN_CHAT_ID') # <-- Сюда будут прилетать лиды
 openai.api_key = os.environ.get('OPENAI_API_KEY')
 
 # Настройка Redis
@@ -114,7 +116,7 @@ def ask_gpt(user_id, user_message):
         if len(history) > 31:
             history = [history[0]] + history[-30:]
 
-       # === ЯДЕРНЫЙ ВАРИАНТ: ШЕПОТ НА УХО ПЕРЕД ОТВЕТОМ ===
+        # === ЯДЕРНЫЙ ВАРИАНТ: ШЕПОТ НА УХО ПЕРЕД ОТВЕТОМ ===
         messages_to_send = history.copy()
         messages_to_send.append({
             "role": "system", 
@@ -124,7 +126,10 @@ def ask_gpt(user_id, user_message):
                 "If the sentence is Russian (e.g., '15000 тенге') -> answer in Russian. "
                 "If English ('maybe') -> English. Егер қазақша болса -> қазақша жауап бер. "
                 "IMPORTANT: ALWAYS transliterate the user's name to match the alphabet of your response! "
-                "(e.g., if writing in English, change 'Вадим' to 'Vadim')."
+                "(e.g., if writing in English, change 'Вадим' to 'Vadim').\n"
+                "🔥🔥 SECRET LEAD CAPTURE RULE 🔥🔥: If the user JUST provided their phone number in their message, "
+                "you MUST include this exact tag anywhere in your response: [NEW_LEAD: their_number]. "
+                "Replace 'their_number' with the actual phone number they provided. Do NOT use this tag if no phone number was given."
             )
         })
 
@@ -134,6 +139,23 @@ def ask_gpt(user_id, user_message):
             temperature=0.7
         )
         ai_answer = response.choices[0].message.content
+
+        # === ДОБАВЛЕНО: ЛОГИКА ПЕРЕХВАТА ЛИДА ===
+        lead_match = re.search(r'\[NEW_LEAD:\s*(.*?)\]', ai_answer)
+        if lead_match:
+            phone_number = lead_match.group(1)
+            # Стираем тег из ответа для клиента, чтобы он ничего не заметил
+            ai_answer = re.sub(r'\[NEW_LEAD:\s*.*?\]', '', ai_answer).strip()
+            
+            # Отправляем тебе в личку (если прописан ADMIN_CHAT_ID в Vercel)
+            if ADMIN_CHAT_ID:
+                admin_notification = (
+                    f"🚨 <b>НОВЫЙ ГОРЯЧИЙ ЛИД!</b> 🚨\n\n"
+                    f"📞 Номер: <b>{phone_number}</b>\n"
+                    f"💬 Клиент только что оставил контакты. Пора закрывать сделку!"
+                )
+                send_telegram_message(ADMIN_CHAT_ID, admin_notification, parse_mode="HTML")
+        # =========================================
 
         # Сохраняем в базу ТОЛЬКО нормальную историю, без "шепота"
         history.append({"role": "assistant", "content": ai_answer})
@@ -189,9 +211,4 @@ def send_instagram_message(recipient_id, text):
     url = f"https://graph.facebook.com/v19.0/me/messages?access_token={PAGE_ACCESS_TOKEN}"
     requests.post(url, json={"recipient": {"id": recipient_id}, "message": {"text": text}})
 
-def send_telegram_message(chat_id, text):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    requests.post(url, json={"chat_id": chat_id, "text": text})
-
-if __name__ == '__main__':
-    app.run()
+# Добавили parse_mode для красивого фор
