@@ -114,11 +114,18 @@ def ask_gpt(user_id, user_message):
         if len(history) > 31:
             history = [history[0]] + history[-30:]
 
-        # === ЯДЕРНЫЙ ВАРИАНТ: ШЕПОТ НА УХО ПЕРЕД ОТВЕТОМ ===
+       # === ЯДЕРНЫЙ ВАРИАНТ: ШЕПОТ НА УХО ПЕРЕД ОТВЕТОМ ===
         messages_to_send = history.copy()
         messages_to_send.append({
             "role": "system", 
-            "content": "CRITICAL RULE: Respond STRICTLY in the language of the user's VERY LAST message. If the user wrote even one word in English (like 'maybe'), your ENTIRE reply MUST be in English. Если по-русски — отвечай по-русски. Егер қазақша болса — қазақша жауап бер."
+            "content": (
+                "CRITICAL RULE: Respond STRICTLY in the language of the user's VERY LAST message. "
+                "Note: Words like 'тенге' are used in Russian too. Look at the GRAMMAR. "
+                "If the sentence is Russian (e.g., '15000 тенге') -> answer in Russian. "
+                "If English ('maybe') -> English. Егер қазақша болса -> қазақша жауап бер. "
+                "IMPORTANT: ALWAYS transliterate the user's name to match the alphabet of your response! "
+                "(e.g., if writing in English, change 'Вадим' to 'Vadim')."
+            )
         })
 
         response = openai.ChatCompletion.create(
