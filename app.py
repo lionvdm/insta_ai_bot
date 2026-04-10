@@ -2,7 +2,7 @@ import os
 import json
 import requests
 import openai
-import re # <-- Добавили библиотеку для поиска секретного тега
+import re
 from flask import Flask, request
 from upstash_redis import Redis
 
@@ -50,41 +50,46 @@ SYSTEM_PROMPT = """
 2. **Старт симуляции:** Обязательно обозначь старт игры и сразу задай продающий вопрос клиенту. 
 3. **КАТЕГОРИЧЕСКИЙ ЗАПРЕТ НА B2B:** Никогда не спрашивай "как вы продаете", "какие проблемы у ваших клиентов" или "как настроен ваш бизнес". Твоя цель — продать абонемент/товар/услугу ЛИЧНО этому пользователю.
 
-**Пример правильного перехода (если бизнес "Formula, фитнес", имя "Вадим"):**
-*Отлично! Включаю режим симуляции. Теперь я менеджер клуба "Formula", а вы — мой клиент. Подыграйте мне! 🚀 Здравствуйте, Вадим! Добро пожаловать в фитнес-клуб Formula! Подскажите, вы ищете абонемент для себя или в подарок?*
-
 4. **Выявление потребностей:** Задавай квалифицирующие вопросы (какая цель, какой бюджет, какие сроки).
-5. **Работа с возражениями:** Если клиент говорит «я подумаю» или «дорого», используй эмпатию и дожимай сделку (предложи бонус, скидку или FOMO).
-
 5. **АГРЕССИВНАЯ РАБОТА С ВОЗРАЖЕНИЯМИ (КРИТИЧЕСКИ ВАЖНО):** Если клиент говорит «я подумаю», «посмотрю другие варианты», «дорого»:
 - **КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО:** прощаться, отпускать клиента, желать "удачи в поисках", давать свой вымышленный номер телефона или предлагать клиенту "связаться позже". 
 - **ПЕРЕХВАТ ИНИЦИАТИВЫ:** Вскрой истинную причину сомнений. (Например: "Скажите честно, Вадим, вас смущает цена или хотите сравнить тренажеры?").
 - **БЕЗОТКАЗНЫЙ ОФФЕР:** Предложи бесплатный первый шаг (гостевой визит, пробный урок, аудит) или скидку, которая сгорит сегодня.
 - **ЗАКРЫТИЕ НА КОНТАКТ:** Твоя цель — взять НОМЕР ТЕЛЕФОНА КЛИЕНТА прямо сейчас. 
-**Пример правильного ответа на "Я подумаю":**
-*Сравнивать — это абсолютно правильный подход, Вадим! Но чтобы вам было с чем сравнивать, давайте я прямо сейчас запишу вас на бесплатную гостевую тренировку с нашим лучшим тренером? Вы ничего не теряете. Напишите ваш номер телефона, и я забронирую за вами пропуск на завтра!*
 
 # Формат ответов (Критически важно!)
 - **Стиль мессенджера:** Короткие, динамичные и лаконичные фразы. Никаких длинных простыней текста.
 - **Тон:** Драйвовый, вежливый, профессиональный, с легким азартом.
-- **Золотое правило продаж:** **КАЖДОЕ** твое сообщение должно заканчиваться вопросом. Тот, кто задает вопросы, управляет диалогом!
+- **Золотое правило продаж:** **КАЖДОЕ** твое сообщение должно заканчиваться вопросом.
 """
 
+# ==========================================
+# 1. БЛОК ФУНКЦИЙ (ОТПРАВКА, ГОЛОС, НЕЙРОСЕТЬ)
+# ==========================================
+
+# Перенесли функцию наверх, чтобы избежать ошибки NameError
+def send_telegram_message(chat_id, text, parse_mode=None):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {"chat_id": chat_id, "text": text}
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
+    requests.post(url, json=payload)
+
+def send_instagram_message(recipient_id, text):
+    url = f"https://graph.facebook.com/v19.0/me/messages?access_token={PAGE_ACCESS_TOKEN}"
+    requests.post(url, json={"recipient": {"id": recipient_id}, "message": {"text": text}})
+
 def transcribe_voice(file_id):
-    """Распознавание голоса через Whisper"""
     try:
-        # Получаем ссылку на аудиофайл в Telegram
         file_info = requests.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getFile?file_id={file_id}").json()
         file_path = file_info['result']['file_path']
         file_url = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{file_path}"
         
-        # Скачиваем аудио во временную папку Vercel
         audio_data = requests.get(file_url).content
         temp_filename = "/tmp/voice.ogg"
         with open(temp_filename, "wb") as f:
             f.write(audio_data)
         
-        # Отправляем аудио в OpenAI Whisper на расшифровку
         with open(temp_filename, "rb") as audio_file:
             transcript = openai.Audio.transcribe("whisper-1", audio_file)
         
@@ -96,27 +101,24 @@ def transcribe_voice(file_id):
 def ask_gpt(user_id, user_message):
     try:
         history_key = f"chat:{user_id}"
-        raw_history = redis.get(history_key)
+        if user_message.strip().lower() in ['/start', '/clear', 'сброс']:
+            redis.delete(history_key)
+            raw_history = None
+        else:
+            raw_history = redis.get(history_key)
 
-        # Загружаем историю
         if raw_history:
             history = json.loads(raw_history) if isinstance(raw_history, str) else raw_history
         else:
             history = []
 
-        # ОЧИСТКА: Убираем старые системные инструкции
         history = [msg for msg in history if msg.get("role") != "system"]
-
-        # Вставляем актуальный промпт
         history.insert(0, {"role": "system", "content": SYSTEM_PROMPT})
-
         history.append({"role": "user", "content": user_message})
 
-        # Лимит сообщений
         if len(history) > 31:
             history = [history[0]] + history[-30:]
 
-        # === ЯДЕРНЫЙ ВАРИАНТ: ШЕПОТ НА УХО ПЕРЕД ОТВЕТОМ ===
         messages_to_send = history.copy()
         messages_to_send.append({
             "role": "system", 
@@ -140,14 +142,12 @@ def ask_gpt(user_id, user_message):
         )
         ai_answer = response.choices[0].message.content
 
-        # === ДОБАВЛЕНО: ЛОГИКА ПЕРЕХВАТА ЛИДА ===
+        # Логика перехвата лида
         lead_match = re.search(r'\[NEW_LEAD:\s*(.*?)\]', ai_answer)
         if lead_match:
             phone_number = lead_match.group(1)
-            # Стираем тег из ответа для клиента, чтобы он ничего не заметил
             ai_answer = re.sub(r'\[NEW_LEAD:\s*.*?\]', '', ai_answer).strip()
             
-            # Отправляем тебе в личку (если прописан ADMIN_CHAT_ID в Vercel)
             if ADMIN_CHAT_ID:
                 admin_notification = (
                     f"🚨 <b>НОВЫЙ ГОРЯЧИЙ ЛИД!</b> 🚨\n\n"
@@ -155,9 +155,7 @@ def ask_gpt(user_id, user_message):
                     f"💬 Клиент только что оставил контакты. Пора закрывать сделку!"
                 )
                 send_telegram_message(ADMIN_CHAT_ID, admin_notification, parse_mode="HTML")
-        # =========================================
 
-        # Сохраняем в базу ТОЛЬКО нормальную историю, без "шепота"
         history.append({"role": "assistant", "content": ai_answer})
         redis.set(history_key, json.dumps(history))
         return ai_answer
@@ -165,27 +163,31 @@ def ask_gpt(user_id, user_message):
         print(f"Error: {e}")
         return "Прости, я немного задумалась. Попробуй еще раз!"
 
-@app.route('/webhook', methods=['GET'])
-def verify():
-    mode = request.args.get("hub.mode")
-    token = request.args.get("hub.verify_token")
-    challenge = request.args.get("hub.challenge")
-    if mode == "subscribe" and token == VERIFY_TOKEN:
-        return challenge, 200
-    return "Hello World", 200
+# ==========================================
+# 2. БЛОК ВЕБХУКОВ (МАРШРУТЫ)
+# ==========================================
 
-@app.route('/webhook', methods=['POST'])
+@app.route('/webhook', methods=['GET', 'POST'])
 def webhook():
-    data = request.get_json()
-    if data.get("object") == "instagram":
-        for entry in data.get("entry", []):
-            for m in entry.get("messaging", []):
-                if m.get("message"):
-                    sid = m["sender"]["id"]
-                    txt = m["message"].get("text")
-                    if txt:
-                        send_instagram_message(sid, ask_gpt(sid, txt))
-    return "EVENT_RECEIVED", 200
+    if request.method == 'GET':
+        mode = request.args.get("hub.mode")
+        token = request.args.get("hub.verify_token")
+        challenge = request.args.get("hub.challenge")
+        if mode == "subscribe" and token == VERIFY_TOKEN:
+            return challenge, 200
+        return "Hello World", 200
+        
+    if request.method == 'POST':
+        data = request.get_json()
+        if data.get("object") == "instagram":
+            for entry in data.get("entry", []):
+                for m in entry.get("messaging", []):
+                    if m.get("message"):
+                        sid = m["sender"]["id"]
+                        txt = m["message"].get("text")
+                        if txt:
+                            send_instagram_message(sid, ask_gpt(sid, txt))
+        return "EVENT_RECEIVED", 200
 
 @app.route('/telegram', methods=['POST'])
 def telegram_webhook():
@@ -193,13 +195,11 @@ def telegram_webhook():
     if "message" in data:
         cid = data["message"]["chat"]["id"]
         
-        # Если прислали голосовое сообщение
         if "voice" in data["message"]:
             file_id = data["message"]["voice"]["file_id"]
             txt = transcribe_voice(file_id)
             if txt:
                 send_telegram_message(cid, ask_gpt(cid, txt))
-        # Если прислали обычный текст
         else:
             txt = data["message"].get("text")
             if txt:
@@ -207,8 +207,5 @@ def telegram_webhook():
                 
     return "OK", 200
 
-def send_instagram_message(recipient_id, text):
-    url = f"https://graph.facebook.com/v19.0/me/messages?access_token={PAGE_ACCESS_TOKEN}"
-    requests.post(url, json={"recipient": {"id": recipient_id}, "message": {"text": text}})
-
-# Добавили parse_mode для красивого фор
+if __name__ == '__main__':
+    app.run()
